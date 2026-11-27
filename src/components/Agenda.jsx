@@ -4,7 +4,8 @@ function Agenda({
   reservas,
   bloqueos,
   horarios,
-  guardarBloqueos,
+  bloquearHorario,
+  desbloquearHorario,
   volver,
 }) {
   const [fechaSeleccionada, setFechaSeleccionada] = useState(
@@ -13,6 +14,8 @@ function Agenda({
 
   // Guarda el horario que el dueño selecciona para bloquear.
   const [horarioABloquear, setHorarioABloquear] = useState("");
+  // Deshabilita los controles mientras se guarda o elimina un bloqueo.
+  const [procesando, setProcesando] = useState(false);
 
   const reservasDelDia = reservas
     .filter((turno) => turno.fecha === fechaSeleccionada)
@@ -34,8 +37,13 @@ function Agenda({
     return !ocupado && !bloqueado;
   });
 
-  function confirmarBloqueo() {
-    if (!fechaSeleccionada || !horarios.includes(horarioABloquear)) {
+  async function confirmarBloqueo() {
+    if (procesando) {
+      return;
+    }
+
+    if (!fechaSeleccionada || !horariosLibres.includes(horarioABloquear)) {
+      alert("Elegí una fecha y un horario disponibles.");
       return;
     }
 
@@ -46,34 +54,42 @@ function Agenda({
       return;
     }
 
-    if (!horariosLibres.includes(horarioABloquear)) {
-      alert("Ese horario ya está reservado o bloqueado.");
-      return;
-    }
+    setProcesando(true);
 
-    const guardado = guardarBloqueos(
-      [...bloqueos, { fecha: fechaSeleccionada, horario: horarioABloquear }],
-      "No se pudo guardar el bloqueo.",
-    );
+    try {
+      // Espera la validación y el guardado del backend.
+      const guardado = await bloquearHorario(
+        fechaSeleccionada,
+        horarioABloquear,
+      );
 
-    if (guardado) {
-      setHorarioABloquear("");
+      if (guardado) {
+        setHorarioABloquear("");
+      }
+    } finally {
+      setProcesando(false);
     }
   }
 
-  function desbloquearHorario({ fecha, horario }) {
-    const nuevosBloqueos = bloqueos.filter(
-      (bloqueo) => bloqueo.fecha !== fecha || bloqueo.horario !== horario,
-    );
+  async function quitarBloqueo(id) {
+    if (procesando) {
+      return;
+    }
 
-    guardarBloqueos(nuevosBloqueos, "No se pudo quitar el bloqueo.");
+    setProcesando(true);
+
+    try {
+      await desbloquearHorario(id);
+    } finally {
+      setProcesando(false);
+    }
   }
 
   return (
     <main>
       <h1>Agenda del negocio</h1>
 
-      <button type="button" onClick={volver}>
+      <button type="button" onClick={volver} disabled={procesando}>
         Volver
       </button>
 
@@ -103,6 +119,7 @@ function Agenda({
           <select
             id="horario-bloqueo"
             value={horarioABloquear}
+            disabled={procesando}
             onChange={(event) => setHorarioABloquear(event.target.value)}
           >
             <option value="">Seleccionar horario</option>
@@ -117,7 +134,7 @@ function Agenda({
           <button
             type="button"
             onClick={confirmarBloqueo}
-            disabled={!horarioABloquear}
+            disabled={procesando || !horarioABloquear}
           >
             Bloquear horario
           </button>
@@ -134,13 +151,14 @@ function Agenda({
 
               <ul>
                 {bloqueosDelDia.map((bloqueo) => (
-                  <li key={bloqueo.horario}>
+                  <li key={bloqueo.id}>
                     {bloqueo.horario}
 
-                    {/* Quita este bloqueo y actualiza los horarios disponibles. */}
+                    {/* Usa el identificador generado por PostgreSQL. */}
                     <button
                       type="button"
-                      onClick={() => desbloquearHorario(bloqueo)}
+                      disabled={procesando}
+                      onClick={() => quitarBloqueo(bloqueo.id)}
                     >
                       Desbloquear
                     </button>

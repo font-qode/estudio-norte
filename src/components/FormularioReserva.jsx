@@ -1,18 +1,85 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function FormularioReserva({
-  reservas,
   bloqueos,
   horarios,
   guardarReserva,
   verAgenda,
-  probarConexion
+  probarConexion,
 }) {
   const [servicio, setServicio] = useState("");
   const [fecha, setFecha] = useState("");
   const [horario, setHorario] = useState("");
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
+  // Indica que hay una reserva enviándose al servidor.
+  const [guardando, setGuardando] = useState(false);
+
+  // Guarda la fecha consultada, sus horarios ocupados y el estado de carga.
+  const [disponibilidad, setDisponibilidad] = useState({
+    fecha: "",
+    ocupados: [],
+    cargando: false,
+    error: "",
+  });
+
+  useEffect(() => {
+    if (!fecha) {
+      return;
+    }
+
+    // Permite cancelar la consulta si el cliente cambia de fecha.
+    const controlador = new AbortController();
+
+    async function consultarHorarios() {
+      setDisponibilidad({
+        fecha,
+        ocupados: [],
+        cargando: true,
+        error: "",
+      });
+
+      try {
+        const respuesta = await fetch(
+          `http://localhost:3000/api/horarios-ocupados?fecha=${fecha}`,
+          { signal: controlador.signal },
+        );
+
+        if (!respuesta.ok) {
+          throw new Error("No se pudieron consultar los horarios.");
+        }
+
+        const ocupados = await respuesta.json();
+
+        if (controlador.signal.aborted) {
+          return;
+        }
+
+        setDisponibilidad({
+          fecha,
+          ocupados,
+          cargando: false,
+          error: "",
+        });
+      } catch (error) {
+        // Una consulta cancelada ya fue reemplazada por otra.
+        if (controlador.signal.aborted) {
+          return;
+        }
+
+        setDisponibilidad({
+          fecha,
+          ocupados: [],
+          cargando: false,
+          error: error.message,
+        });
+      }
+    }
+
+    consultarHorarios();
+
+    return () => controlador.abort();
+  }, [fecha]);
 
   const hoy = new Date();
 
@@ -25,13 +92,23 @@ export default function FormularioReserva({
   const ahora = new Date();
   const minutosActuales = ahora.getHours() * 60 + ahora.getMinutes();
 
+  // Comprueba que la respuesta corresponde al día elegido y terminó de cargar.
+  const disponibilidadLista =
+    disponibilidad.fecha === fecha &&
+    !disponibilidad.cargando &&
+    !disponibilidad.error;
+
   const horariosDisponibles = horarios.filter((hora) => {
-    const ocupado = reservas.some(
-      (turno) => turno.fecha === fecha && turno.horario === hora
-    );
+    // Espera la consulta antes de ofrecer horarios.
+    if (!disponibilidadLista) {
+      return false;
+    }
+
+    // Comprueba si PostgreSQL devolvió este horario como ocupado.
+    const ocupado = disponibilidad.ocupados.includes(hora);
 
     const bloqueado = bloqueos.some(
-      (bloqueo) => bloqueo.fecha === fecha && bloqueo.horario === hora
+      (bloqueo) => bloqueo.fecha === fecha && bloqueo.horario === hora,
     );
 
     if (ocupado || bloqueado) {
@@ -48,7 +125,11 @@ export default function FormularioReserva({
     return minutosDelTurno > minutosActuales;
   });
 
-  function confirmarReserva() {
+  async function confirmarReserva() {
+    // Evita volver a enviar mientras esperamos la respuesta.
+    if (guardando) {
+      return;
+    }
     if (!servicio || !fecha || !horario || !nombre.trim() || !telefono.trim()) {
       return;
     }
@@ -73,14 +154,21 @@ export default function FormularioReserva({
       return;
     }
 
-    guardarReserva({
-      id: crypto.randomUUID(),
-      servicio,
-      fecha,
-      horario,
-      nombre: nombre.trim(),
-      telefono: telefono.trim(),
-    });
+    setGuardando(true);
+
+    try {
+      // Espera a que App termine la petición al backend.
+      await guardarReserva({
+        servicio,
+        fecha,
+        horario,
+        nombre: nombre.trim(),
+        telefono: telefono.trim(),
+      });
+    } finally {
+      // Habilita nuevamente el botón si seguimos en el formulario.
+      setGuardando(false);
+    }
   }
 
   return (
@@ -128,7 +216,18 @@ export default function FormularioReserva({
         <div>
           <p>Elegí un horario</p>
 
-          {horariosDisponibles.length === 0 && (
+          {/* Avisa mientras se consultan los horarios de la fecha elegida. */}
+          {(disponibilidad.fecha !== fecha || disponibilidad.cargando) && (
+            <p>Consultando horarios...</p>
+          )}
+
+          {/* Muestra el error si falló la consulta. */}
+          {disponibilidad.fecha === fecha && disponibilidad.error && (
+            <p role="alert">{disponibilidad.error}</p>
+          )}
+
+          {/* Avisa cuando la consulta terminó y no quedan horarios libres. */}
+          {disponibilidadLista && horariosDisponibles.length === 0 && (
             <p>No quedan horarios disponibles para esta fecha. Elegí otra.</p>
           )}
 
@@ -177,9 +276,9 @@ export default function FormularioReserva({
           <button
             type="button"
             onClick={confirmarReserva}
-            disabled={!nombre.trim() || !telefono.trim()}
+            disabled={guardando || !nombre.trim() || !telefono.trim()}
           >
-            Confirmar turno
+            {guardando ? "Guardando..." : "Confirmar turno"}
           </button>
         </div>
       )}

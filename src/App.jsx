@@ -9,6 +9,8 @@ const horarios = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30"];
 
 function App() {
   const [mostrarAgenda, setMostrarAgenda] = useState(false);
+  // Guarda las reservas que consultamos al backend para la agenda.
+const [reservasAgenda, setReservasAgenda] = useState([]);
   const [reservaCancelada, setReservaCancelada] = useState(false);
   const [reservas, setReservas] = useState(() => {
     try {
@@ -34,71 +36,165 @@ function App() {
     () => reservas[reservas.length - 1] ?? null,
   );
 
-  const [bloqueos, setBloqueos] = useState(() => {
-    try {
-      const contenido = localStorage.getItem("bloqueos");
-      const datos = contenido ? JSON.parse(contenido) : [];
+  // Los bloqueos se cargan desde PostgreSQL al abrir la agenda.
+const [bloqueos, setBloqueos] = useState([]);
 
-      return Array.isArray(datos) ? datos : [];
-    } catch {
-      return [];
+  // Guarda un único bloqueo en PostgreSQL.
+async function bloquearHorario(fecha, horario) {
+  try {
+    const respuesta = await fetch(
+      "http://localhost:3000/api/bloqueos",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fecha, horario }),
+      }
+    );
+
+    const datos = await respuesta.json();
+
+    if (!respuesta.ok) {
+      throw new Error(datos.mensaje || "No se pudo guardar el bloqueo.");
     }
-  });
 
-  function guardarBloqueos(nuevosBloqueos, mensajeDeError) {
-    try {
-      localStorage.setItem("bloqueos", JSON.stringify(nuevosBloqueos));
-    } catch {
-      alert(mensajeDeError);
-      return false;
-    }
-
-    setBloqueos(nuevosBloqueos);
+    // Agrega el bloqueo con el id generado por PostgreSQL.
+    setBloqueos((anteriores) => [...anteriores, datos]);
     return true;
+  } catch (error) {
+    alert(error.message);
+    return false;
   }
+}
 
-  function guardarReserva(nuevaReserva) {
-    const nuevasReservas = [...reservas, nuevaReserva];
+// Quita un bloqueo de PostgreSQL y después actualiza React.
+async function desbloquearHorario(id) {
+  try {
+    const respuesta = await fetch(
+      `http://localhost:3000/api/bloqueos/${id}`,
+      { method: "DELETE" }
+    );
 
-    try {
-      localStorage.setItem("reserva", JSON.stringify(nuevasReservas));
-    } catch {
-      alert("No se pudo guardar el turno en este navegador.");
-      return;
+    const datos = await respuesta.json();
+
+    if (!respuesta.ok) {
+      throw new Error(datos.mensaje || "No se pudo quitar el bloqueo.");
     }
 
-    setReservas(nuevasReservas);
-    setReserva(nuevaReserva);
+    setBloqueos((anteriores) =>
+      anteriores.filter((bloqueo) => bloqueo.id !== id)
+    );
+
+    return true;
+  } catch (error) {
+    alert(error.message);
+    return false;
+  }
+}
+
+  // Envía la reserva a Express para guardarla en PostgreSQL.
+async function guardarReserva(nuevaReserva) {
+  try {
+    const respuesta = await fetch(
+      "http://localhost:3000/api/reservas",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(nuevaReserva),
+      }
+    );
+
+    const datos = await respuesta.json();
+
+    if (!respuesta.ok) {
+      throw new Error(datos.mensaje || "No se pudo guardar la reserva.");
+    }
+
+    // Usa la reserva que devuelve PostgreSQL, incluido su id.
+    setReservas((anteriores) => [...anteriores, datos]);
+    setReserva(datos);
     setReservaCancelada(false);
+
+    return true;
+  } catch (error) {
+    console.error("Error al guardar la reserva:", error);
+    alert(error.message);
+    return false;
+  }
+}
+
+  // Solicita al backend que elimine el turno de PostgreSQL.
+async function cancelarReserva() {
+  if (!reserva) {
+    return;
   }
 
-  function cancelarReserva() {
-    if (!reserva) {
-      return;
+  const id = reserva.id;
+
+  try {
+    const respuesta = await fetch(
+      `http://localhost:3000/api/reservas/${id}`,
+      {
+        method: "DELETE",
+      }
+    );
+
+    const datos = await respuesta.json();
+
+    // Si ya no existe, también podemos mostrarla como cancelada.
+    if (!respuesta.ok && respuesta.status !== 404) {
+      throw new Error(datos.mensaje || "No se pudo cancelar el turno.");
     }
 
-    const nuevasReservas = reservas.filter((turno) => turno.id !== reserva.id);
+    // Actualiza las listas de React después de la respuesta del servidor.
+    setReservas((anteriores) =>
+      anteriores.filter((turno) => turno.id !== id)
+    );
 
-    try {
-      localStorage.setItem("reserva", JSON.stringify(nuevasReservas));
-    } catch {
-      alert("No se pudo cancelar el turno. Intentá nuevamente.");
-      return;
-    }
+    setReservasAgenda((anteriores) =>
+      anteriores.filter((turno) => turno.id !== id)
+    );
 
-    setReservas(nuevasReservas);
-    setReservaCancelada(true);
     setReserva(null);
+    setReservaCancelada(true);
+  } catch (error) {
+    console.error("Error al cancelar el turno:", error);
+    alert(error.message);
   }
+}
 
   function volverAReservar() {
     setReserva(null);
     setReservaCancelada(false);
   }
 
-  function verAgenda() {
+  // Consulta las reservas al backend antes de abrir la agenda.
+// Consulta reservas y bloqueos antes de abrir la agenda.
+async function verAgenda() {
+  try {
+    const [respuestaReservas, respuestaBloqueos] = await Promise.all([
+      fetch("http://localhost:3000/api/reservas"),
+      fetch("http://localhost:3000/api/bloqueos"),
+    ]);
+
+    if (!respuestaReservas.ok || !respuestaBloqueos.ok) {
+      throw new Error("No se pudieron cargar los datos de la agenda.");
+    }
+
+    const [datosReservas, datosBloqueos] = await Promise.all([
+      respuestaReservas.json(),
+      respuestaBloqueos.json(),
+    ]);
+
+    setReservasAgenda(datosReservas);
+    setBloqueos(datosBloqueos);
     setMostrarAgenda(true);
+  } catch (error) {
+    console.error("Error al cargar la agenda:", error);
+    alert(error.message);
   }
+}
 
   // Consulta al backend y muestra su respuesta.
 async function probarConexion() {
@@ -133,7 +229,6 @@ async function probarConexion() {
         ) : (
           <FormularioReserva
             probarConexion={probarConexion}
-            reservas={reservas}
             bloqueos={bloqueos}
             horarios={horarios}
             guardarReserva={guardarReserva}
@@ -143,10 +238,11 @@ async function probarConexion() {
       </Activity>
       {mostrarAgenda && (
         <Agenda
-          reservas={reservas}
+          reservas={reservasAgenda}
           bloqueos={bloqueos}
           horarios={horarios}
-          guardarBloqueos={guardarBloqueos}
+          bloquearHorario={bloquearHorario}
+          desbloquearHorario={desbloquearHorario}
           volver={() => setMostrarAgenda(false)}
         />
       )}
